@@ -1,5 +1,7 @@
 # vinext-starter
 
+Deployed Public Link - https://xiao-conductivity-monitor.rishabh20gupta00.chatgpt.site
+
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
 Drizzle support.
