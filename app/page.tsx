@@ -5,6 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 type PathState = "unknown" | "connected" | "cut";
 type ProgramState = "idle" | "starting" | "running";
 
+type BridgeFinding = {
+  id: string;
+  label: string;
+};
+
 type SerialPortLike = {
   readable: ReadableStream<Uint8Array> | null;
   writable: WritableStream<Uint8Array> | null;
@@ -36,12 +41,12 @@ const CONNECTIONS: ConnectionDefinition[] = [
 const DEFAULT_CODE = `from machine import Pin
 from time import sleep_ms
 
-# Set source pins HIGH.
+# Source pins begin in high-impedance mode.
 outputs = {
-    "D3": Pin(29, Pin.OUT, value=1),
-    "D5": Pin(7, Pin.OUT, value=1),
-    "D10": Pin(3, Pin.OUT, value=1),
-    "D8": Pin(2, Pin.OUT, value=1),
+    "D3": Pin(29, Pin.IN),
+    "D5": Pin(7, Pin.IN),
+    "D10": Pin(3, Pin.IN),
+    "D8": Pin(2, Pin.IN),
 }
 
 # Read destination pins. Unconnected pins remain LOW.
@@ -59,29 +64,49 @@ connections = [
     ("D8", "D7"),
 ]
 
-def scan_connections():
-    sleep_ms(10)
+def set_all_sources_off():
+    # High impedance prevents two bridged GPIO outputs fighting each other.
+    for pin in outputs.values():
+        pin.init(Pin.IN)
 
+def scan_connections():
     print("\\nConnection test")
+    print("BRIDGE_SCAN: START")
     print("-----------------------")
 
     all_connected = True
+    bridge_detected = False
 
-    for output_name, input_name in connections:
-        connected = inputs[input_name].value() == 1
+    # Drive only one path at a time. Any other HIGH input is a copper bridge.
+    for output_name, expected_input_name in connections:
+        set_all_sources_off()
+        outputs[output_name].init(Pin.OUT, value=1)
+        sleep_ms(10)
+
+        connected = inputs[expected_input_name].value() == 1
         status = "CONNECTED" if connected else "NOT CONNECTED"
 
         print("{} -> {}: {}".format(
             output_name,
-            input_name,
+            expected_input_name,
             status,
         ))
 
         if not connected:
             all_connected = False
 
+        for input_name, input_pin in inputs.items():
+            if input_name != expected_input_name and input_pin.value() == 1:
+                print("BRIDGE: {} -> {}".format(output_name, input_name))
+                bridge_detected = True
+
+    set_all_sources_off()
+
+    if not bridge_detected:
+        print("BRIDGE: NONE")
+
     print("-----------------------")
-    print("OVERALL:", "PASS" if all_connected else "FAIL")
+    print("OVERALL:", "PASS" if all_connected and not bridge_detected else "FAIL")
 
 
 while True:
@@ -92,6 +117,18 @@ while True:
 const initialStates = Object.fromEntries(
   CONNECTIONS.map((connection) => [connection.id, "unknown" as PathState]),
 ) as Record<string, PathState>;
+
+function getBridgeFinding(outputPin: string, inputPin: string): BridgeFinding | null {
+  const sourcePath = CONNECTIONS.find((connection) => connection.output === outputPin);
+  const touchedPath = CONNECTIONS.find((connection) => connection.input === inputPin);
+  if (!sourcePath || !touchedPath || sourcePath.id === touchedPath.id) return null;
+
+  const paths = [sourcePath, touchedPath].sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    id: `${paths[0].id}--${paths[1].id}`,
+    label: `${paths[0].pair} is touching ${paths[1].pair}`,
+  };
+}
 
 function getSerialApi(): SerialApi | null {
   if (typeof navigator === "undefined" || !("serial" in navigator)) return null;
@@ -107,6 +144,7 @@ export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
   const [programState, setProgramState] = useState<ProgramState>("idle");
   const [pathStates, setPathStates] = useState<Record<string, PathState>>(initialStates);
+  const [bridgeFindings, setBridgeFindings] = useState<BridgeFinding[] | null>(null);
   const [connectionNote, setConnectionNote] = useState("Connect the XIAO to begin.");
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
   const [lastScan, setLastScan] = useState<string | null>(null);
@@ -117,6 +155,8 @@ export default function Home() {
   const writerRef = useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
   const readBufferRef = useRef("");
   const writeQueueRef = useRef(Promise.resolve());
+  const pendingBridgesRef = useRef<BridgeFinding[]>([]);
+  const bridgeScanActiveRef = useRef(false);
 
   const appendTerminal = useCallback((text: string) => {
     const newLines = text.replace(/\r/g, "").split("\n").filter(Boolean);
@@ -132,6 +172,13 @@ export default function Home() {
       readBufferRef.current = lines.pop() ?? "";
 
       for (const line of lines) {
+        const trimmedLine = line.trim();
+
+        if (trimmedLine === "BRIDGE_SCAN: START") {
+          pendingBridgesRef.current = [];
+          bridgeScanActiveRef.current = true;
+        }
+
         const result = line.match(/(D\d+)\s*->\s*(D\d+):\s*(CONNECTED|NOT CONNECTED)/);
         if (result) {
           const connection = CONNECTIONS.find(
@@ -145,7 +192,19 @@ export default function Home() {
           }
         }
 
+        const bridgeResult = trimmedLine.match(/^BRIDGE:\s*(D\d+)\s*->\s*(D\d+)$/);
+        if (bridgeResult && bridgeScanActiveRef.current) {
+          const finding = getBridgeFinding(bridgeResult[1], bridgeResult[2]);
+          if (finding && !pendingBridgesRef.current.some((item) => item.id === finding.id)) {
+            pendingBridgesRef.current.push(finding);
+          }
+        }
+
         if (/OVERALL:\s*(PASS|FAIL)/.test(line)) {
+          if (bridgeScanActiveRef.current) {
+            setBridgeFindings([...pendingBridgesRef.current]);
+            bridgeScanActiveRef.current = false;
+          }
           setLastScan(
             new Intl.DateTimeFormat(undefined, {
               hour: "numeric",
@@ -163,6 +222,7 @@ export default function Home() {
     setIsConnected(false);
     setProgramState("idle");
     setPathStates(initialStates);
+    setBridgeFindings(null);
     setConnectionNote("XIAO connection lost. Reconnect the USB cable or port.");
   }, []);
 
@@ -238,6 +298,7 @@ export default function Home() {
       readBufferRef.current = "";
       setTerminalLines([]);
       setPathStates(initialStates);
+      setBridgeFindings(null);
       setIsConnected(true);
       setConnectionNote("XIAO connected. Run the code to start monitoring.");
       void readFromPort(port);
@@ -272,6 +333,7 @@ export default function Home() {
 
     setIsConnected(false);
     setPathStates(initialStates);
+    setBridgeFindings(null);
     setConnectionNote("Disconnected.");
   };
 
@@ -279,6 +341,7 @@ export default function Home() {
     if (!isConnected) return;
     setProgramState("starting");
     setPathStates(initialStates);
+    setBridgeFindings(null);
     setLastScan(null);
     setConnectionNote("Starting the monitor…");
 
@@ -299,7 +362,7 @@ export default function Home() {
       await writeText("\r\n");
 
       setProgramState("running");
-      setConnectionNote("Monitoring continuously. Laser cuts will appear in red.");
+      setConnectionNote("Monitoring cuts and melted-copper bridges continuously.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "The code could not be started.";
       setProgramState("idle");
@@ -318,23 +381,38 @@ export default function Home() {
   const states = Object.values(pathStates);
   const cutCount = states.filter((state) => state === "cut").length;
   const connectedCount = states.filter((state) => state === "connected").length;
+  const bridgeCount = bridgeFindings?.length ?? 0;
 
   const overall = useMemo(() => {
     if (!isConnected) {
       return { tone: "offline", eyebrow: "Device offline", title: "XIAO not connected" };
     }
-    if (cutCount > 0) {
+    if (cutCount > 0 || bridgeCount > 0) {
+      const faultSummary = [
+        cutCount ? `${cutCount} ${cutCount === 1 ? "break" : "breaks"}` : null,
+        bridgeCount ? `${bridgeCount} ${bridgeCount === 1 ? "bridge" : "bridges"}` : null,
+      ].filter(Boolean).join(" · ");
       return {
         tone: "danger",
-        eyebrow: `${cutCount} ${cutCount === 1 ? "break" : "breaks"} detected`,
-        title: "Conductive path broken",
+        eyebrow: `${faultSummary} detected`,
+        title: cutCount && bridgeCount
+          ? "Multiple board faults detected"
+          : bridgeCount
+            ? "Melted copper connected two paths"
+            : "Conductive path broken",
       };
     }
     if (connectedCount === CONNECTIONS.length) {
       return { tone: "good", eyebrow: "All four paths connected", title: "Board conductivity is good" };
     }
     return { tone: "waiting", eyebrow: "Waiting for readings", title: "Run the monitor" };
-  }, [connectedCount, cutCount, isConnected]);
+  }, [bridgeCount, connectedCount, cutCount, isConnected]);
+
+  const bridgeTone = !isConnected || bridgeFindings === null
+    ? "unknown"
+    : bridgeFindings.length
+      ? "danger"
+      : "good";
 
   return (
     <main>
@@ -369,6 +447,34 @@ export default function Home() {
             <h2>{overall.title}</h2>
           </div>
           <div className="overallMeta">{lastScan ? `Last scan ${lastScan}` : "No scan yet"}</div>
+        </section>
+
+        <section className={`bridgeField bridgeField-${bridgeTone}`} aria-live="assertive">
+          <div className="bridgeFieldLabel">
+            <p className="kicker">CROSS-CONNECTION</p>
+            <h2>Melted copper bridge</h2>
+          </div>
+          <div className="bridgeFieldResult">
+            <span className={`bridgeStatus bridgeStatus-${bridgeTone}`}>
+              {bridgeTone === "danger" ? "BRIDGE FOUND" : bridgeTone === "good" ? "CLEAR" : "WAITING"}
+            </span>
+            <div>
+              <strong>
+                {bridgeTone === "danger"
+                  ? `${bridgeFindings?.length} unintended ${bridgeFindings?.length === 1 ? "connection" : "connections"}`
+                  : bridgeTone === "good"
+                    ? "No other pairs are connected"
+                    : "Run the monitor to check"}
+              </strong>
+              <p>
+                {bridgeTone === "danger"
+                  ? bridgeFindings?.map((finding) => finding.label).join("; ")
+                  : bridgeTone === "good"
+                    ? "The four conductive paths remain isolated from each other."
+                    : "The one-at-a-time GPIO scan will detect melted copper joining two paths."}
+              </p>
+            </div>
+          </div>
         </section>
 
         <section aria-labelledby="corners-title">
@@ -426,7 +532,7 @@ export default function Home() {
             value={code}
           />
           <p className="editorHelp">
-            The dashboard presses Enter once per second and reads the four connection results. Keep the same output format when editing the test.
+            The dashboard presses Enter once per second, checks every path, and looks for cross-pair bridges. Keep the same output format when editing the test.
           </p>
 
           <details className="terminal">

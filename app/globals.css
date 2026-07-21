@@ -229,6 +229,72 @@ h2 {
   white-space: nowrap;
 }
 
+.bridgeField {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.7fr) minmax(0, 1.3fr);
+  align-items: center;
+  gap: 24px;
+  margin: -24px 0 42px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  padding: 20px 22px;
+  background: white;
+}
+
+.bridgeField-good {
+  border-color: #acd9c0;
+}
+
+.bridgeField-danger {
+  border-color: #e49a93;
+  background: var(--red-soft);
+}
+
+.bridgeFieldLabel h2 {
+  font-size: 1.2rem;
+}
+
+.bridgeFieldResult {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 13px;
+}
+
+.bridgeStatus {
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: #eef1ef;
+  color: #66706b;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.065em;
+  white-space: nowrap;
+}
+
+.bridgeStatus-good {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.bridgeStatus-danger {
+  background: #f8d8d4;
+  color: var(--red);
+}
+
+.bridgeFieldResult strong {
+  display: block;
+  margin: 1px 0 5px;
+  font-size: 0.98rem;
+}
+
+.bridgeFieldResult p {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
 .sectionHeading {
   margin-bottom: 18px;
 }
@@ -348,7 +414,7 @@ h2 {
 .codeEditor {
   display: block;
   width: 100%;
-  min-height: 570px;
+  min-height: 700px;
   resize: vertical;
   border: 1px solid #26332e;
   border-radius: 16px;
@@ -430,6 +496,14 @@ h2 {
 
   .connectionNote {
     text-align: left;
+  }
+
+  .bridgeField {
+    grid-template-columns: 1fr;
+  }
+
+  .bridgeFieldResult {
+    grid-template-columns: 1fr;
   }
 
   .cornerGrid {
