@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createWriteBytes } from "./write-queue";
 
 type PathState = "unknown" | "connected" | "cut";
 type ProgramState = "idle" | "starting" | "running";
@@ -154,7 +155,6 @@ export default function Home() {
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const writerRef = useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
   const readBufferRef = useRef("");
-  const writeQueueRef = useRef(Promise.resolve());
   const pendingBridgesRef = useRef<BridgeFinding[]>([]);
   const bridgeScanActiveRef = useRef(false);
 
@@ -266,13 +266,14 @@ export default function Home() {
     [markDisconnected, processSerialText],
   );
 
+  const writeBytesRef = useRef<((bytes: Uint8Array) => Promise<void>) | null>(
+    null,
+  );
   const writeBytes = useCallback((bytes: Uint8Array) => {
-    writeQueueRef.current = writeQueueRef.current.then(async () => {
-      const writer = writerRef.current;
-      if (!writer) throw new Error("XIAO is not connected.");
-      await writer.write(bytes);
-    });
-    return writeQueueRef.current;
+    if (!writeBytesRef.current) {
+      writeBytesRef.current = createWriteBytes(() => writerRef.current);
+    }
+    return writeBytesRef.current(bytes);
   }, []);
 
   const writeText = useCallback(
